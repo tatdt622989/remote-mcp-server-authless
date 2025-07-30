@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "azure-devops-tools": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://your-deployed-url.workers.dev/sse"
+      ]
+    }
+  }
+}

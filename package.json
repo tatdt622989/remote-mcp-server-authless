@@ -1,6 +1,7 @@
 {
 	"name": "remote-mcp-server-authless",
-	"version": "0.0.0",
+	"version": "0.0.1",
+	"description": "Remote MCP Server with Calculator, Japanese Vocabulary and Azure DevOps tools",
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",

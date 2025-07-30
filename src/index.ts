@@ -5,7 +5,7 @@ import { registerAllTools } from "./tools/index.js";
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Authless Calculator & Japanese Vocabulary",
+		name: "Calculator, Japanese Vocabulary & Azure DevOps Tools",
 		version: "1.0.0",
 	});
 

@@ -1,6 +1,69 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+````markdown
+# Remote MCP Server with Calculator, Japanese Vocabulary & Azure DevOps Tools
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers. 
+This remote MCP server provides multiple tools for different use cases:
+- Calculator tools for mathematical operations
+- Japanese vocabulary tools for language learning
+- Azure DevOps tools for work item management
+
+Deployed on Cloudflare Workers without authentication requirements.
+
+## Available Tools
+
+### Calculator Tools
+- Basic mathematical operations
+- Advanced calculations
+
+### Japanese Vocabulary Tools
+- Vocabulary lookup and management
+- Language learning assistance
+
+### Azure DevOps Tools
+- **validate_azure_devops_user**: Validate Azure DevOps user identity and PAT validity
+- **get_work_item**: Get detailed information about Azure DevOps work items (with user validation)
+- **find_parent_feature**: Find the parent Feature or Epic of a work item (with user validation)
+
+## Azure DevOps Tools Usage
+
+All Azure DevOps tools include built-in user authentication to verify the PAT and user identity before performing operations.
+
+The Azure DevOps tools require the following parameters:
+- `azure_devops_pat`: Your Azure DevOps Personal Access Token
+- `azure_devops_org_url`: Your organization URL (e.g., https://dev.azure.com/yourorg)
+- `azure_devops_project`: Project name (optional for some operations)
+
+### Example Usage
+
+```javascript
+// First, validate your Azure DevOps user
+await tools.validate_azure_devops_user({
+  azure_devops_pat: "your-pat-token",
+  azure_devops_org_url: "https://dev.azure.com/yourorg"
+});
+
+// Get work item details (includes automatic user validation)
+await tools.get_work_item({
+  work_item_id: 12345,
+  azure_devops_pat: "your-pat-token",
+  azure_devops_org_url: "https://dev.azure.com/yourorg",
+  azure_devops_project: "YourProject"
+});
+
+// Find parent feature (includes automatic user validation)
+await tools.find_parent_feature({
+  work_item_id: 12345,
+  azure_devops_pat: "your-pat-token", 
+  azure_devops_org_url: "https://dev.azure.com/yourorg",
+  azure_devops_project: "YourProject"
+});
+```
+
+### Security Features
+
+- **User Authentication**: All Azure DevOps operations include automatic user validation
+- **PAT Verification**: Personal Access Tokens are validated before any API calls
+- **User Identity Display**: Shows authenticated user information in results
+- **Permission Validation**: Ensures PAT has appropriate permissions for operations
 
 ## Get started: 
 
@@ -15,7 +78,7 @@ npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/rem
 
 ## Customizing your MCP Server
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`. 
+To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `src/tools/` directory and register them in `src/tools/index.ts`. 
 
 ## Connect to Cloudflare AI Playground
 
@@ -36,7 +99,7 @@ Update with this configuration:
 ```json
 {
   "mcpServers": {
-    "calculator": {
+    "multi-tools": {
       "command": "npx",
       "args": [
         "mcp-remote",
@@ -47,4 +110,12 @@ Update with this configuration:
 }
 ```
 
-Restart Claude and you should see the tools become available. 
+Restart Claude and you should see all the tools become available.
+
+## Security Notes
+
+- Azure DevOps PAT tokens are passed as parameters and not stored
+- This is an authless server - ensure your deployment is appropriately secured
+- PAT tokens should have minimal required permissions for work item access
+
+```` 
