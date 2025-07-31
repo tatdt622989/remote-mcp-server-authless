@@ -4,8 +4,20 @@
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://your-deployed-url.workers.dev/sse"
-      ]
+        "https://remote-mcp-server-authless.gkyjdfbqsw.workers.dev/sse",
+        "--header",
+        "X-Azure-DevOps-PAT:${AZURE_DEVOPS_PAT}",
+        "--header",
+        "X-Azure-DevOps-Org-URL:${AZURE_DEVOPS_ORG_URL}",
+        "--header",
+        "X-Azure-DevOps-Project:${AZURE_DEVOPS_PROJECT}"
+      ],
+      "env": {
+        "AZURE_DEVOPS_PAT": "你的-PAT-Token",
+        "AZURE_DEVOPS_ORG_URL": "https://dev.azure.com/你的組織名稱",
+        "AZURE_DEVOPS_PROJECT": "你的專案名稱"
+      }
     }
   }
 }
+

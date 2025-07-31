@@ -25,38 +25,75 @@ Deployed on Cloudflare Workers without authentication requirements.
 
 ## Azure DevOps Tools Usage
 
-All Azure DevOps tools include built-in user authentication to verify the PAT and user identity before performing operations.
+Azure DevOps 工具透過 HTTP headers 自動讀取使用者的認證資訊，無需在每次呼叫時手動輸入 PAT。
 
-The Azure DevOps tools require the following parameters:
-- `azure_devops_pat`: Your Azure DevOps Personal Access Token
-- `azure_devops_org_url`: Your organization URL (e.g., https://dev.azure.com/yourorg)
-- `azure_devops_project`: Project name (optional for some operations)
+### 客戶端設定
 
-### Example Usage
+在 Claude Desktop 的設定檔中配置如下：
 
-```javascript
-// First, validate your Azure DevOps user
-await tools.validate_azure_devops_user({
-  azure_devops_pat: "your-pat-token",
-  azure_devops_org_url: "https://dev.azure.com/yourorg"
-});
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-// Get work item details (includes automatic user validation)
-await tools.get_work_item({
-  work_item_id: 12345,
-  azure_devops_pat: "your-pat-token",
-  azure_devops_org_url: "https://dev.azure.com/yourorg",
-  azure_devops_project: "YourProject"
-});
-
-// Find parent feature (includes automatic user validation)
-await tools.find_parent_feature({
-  work_item_id: 12345,
-  azure_devops_pat: "your-pat-token", 
-  azure_devops_org_url: "https://dev.azure.com/yourorg",
-  azure_devops_project: "YourProject"
-});
+```json
+{
+  "mcpServers": {
+    "azure-devops-tools": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://remote-mcp-server-authless.gkyjdfbqsw.workers.dev/sse",
+        "--header",
+        "X-Azure-DevOps-PAT:${AZURE_DEVOPS_PAT}",
+        "--header",
+        "X-Azure-DevOps-Org-URL:${AZURE_DEVOPS_ORG_URL}",
+        "--header",
+        "X-Azure-DevOps-Project:${AZURE_DEVOPS_PROJECT}"
+      ],
+      "env": {
+        "AZURE_DEVOPS_PAT": "你的-PAT-Token",
+        "AZURE_DEVOPS_ORG_URL": "https://dev.azure.com/你的組織名稱",
+        "AZURE_DEVOPS_PROJECT": "你的專案名稱"
+      }
+    }
+  }
+}
 ```
+
+### 可用工具
+
+- **validate_azure_devops_user**: 驗證 Azure DevOps 使用者身份和 PAT 有效性
+- **get_work_item**: 取得工作事項詳細資訊（需要 work_item_id 參數）
+- **find_parent_feature**: 查詢工作事項的上層 Feature 或 Epic（需要 work_item_id 參數）
+
+### 使用範例
+
+```
+請驗證我的 Azure DevOps 使用者身份
+```
+
+```
+請幫我查詢工作事項 12345 的詳細資訊
+```
+
+```
+請幫我找出工作事項 12345 的上層 Feature 或 Epic
+```
+
+### 如何取得 Personal Access Token (PAT)
+
+1. 登入你的 Azure DevOps 組織
+2. 點選右上角的使用者圖示，選擇 "Personal access tokens"
+3. 點選 "New Token" 建立新的 token
+4. 設定 token 名稱和過期時間
+5. 在 "Scopes" 中選擇 "Work Items" 並給予 "Read" 權限
+6. 點選 "Create" 並複製產生的 token
+7. 將 token 填入上述設定檔的 `AZURE_DEVOPS_PAT` 欄位
+
+### 安全注意事項
+
+- PAT token 只儲存在你的本地設定檔中，不會傳送到服務器保存
+- 建議定期更換 PAT token
+- 只給予工具所需的最小權限（Work Items Read）
 
 ### Security Features
 
@@ -103,7 +140,7 @@ Update with this configuration:
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://localhost:8787/sse"  // or remote-mcp-server-authless.your-account.workers.dev/sse
+        "https://remote-mcp-server-authless.gkyjdfbqsw.workers.dev/sse"
       ]
     }
   }

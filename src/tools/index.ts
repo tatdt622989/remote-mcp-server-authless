@@ -11,7 +11,7 @@ export function registerAllTools(server: McpServer) {
 	registerCalculatorTools(server);
 	
 	// 註冊日文單字工具
-	registerJapaneseVocabularyTools(server);
+	// registerJapaneseVocabularyTools(server);
 	
 	// 註冊 Azure DevOps 工具
 	registerAzureDevOpsTools(server);

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getCurrentRequestHeaders } from "../index.js";
 
 // Azure DevOps 配置類型
 interface AzureDevOpsConfig {
@@ -72,10 +73,10 @@ class AzureDevOpsService {
     this.validateConfig();
 
     try {
-      // 使用 Profile API 來驗證 PAT 和取得使用者資訊
-      const profileUrl = "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.0";
-
-      const response = await fetch(profileUrl, {
+      // 使用 Azure DevOps REST API 來驗證使用者身份
+      // 先嘗試取得組織資訊來驗證 PAT 和存取權限
+      const orgUrl = `${this.config.orgUrl}/_apis/connectionData?api-version=6.0-preview`;
+      const response = await fetch(orgUrl, {
         method: "GET",
         headers: this.getAuthHeaders(),
       });
@@ -84,7 +85,6 @@ class AzureDevOpsService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        
         if (response.status === 401) {
           if (errorText.includes("expired") || errorText.includes("Personal Access Token used has expired")) {
             throw new Error("Azure DevOps Personal Access Token (PAT) 已過期，請更新您的 PAT");
@@ -96,18 +96,24 @@ class AzureDevOpsService {
         throw new Error(`Azure DevOps 驗證失敗: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
-      const profile = await response.json() as any;
+      const connectionData = await response.json() as any;
       
+      // 從 connectionData 中提取使用者資訊
+      const authenticatedUser = connectionData.authenticatedUser;
+      if (!authenticatedUser) {
+        throw new Error("無法取得使用者資訊");
+      }
+
       const userProfile: UserProfile = {
-        id: profile.id,
-        displayName: profile.displayName,
-        emailAddress: profile.emailAddress,
-        descriptor: profile.descriptor
+        id: authenticatedUser.id || authenticatedUser.descriptor || 'unknown',
+        displayName: authenticatedUser.displayName || authenticatedUser.providerDisplayName || 'Unknown User',
+        emailAddress: authenticatedUser.properties?.Account?.$value || 'unknown@email.com',
+        descriptor: authenticatedUser.descriptor || 'unknown'
       };
 
       console.log(`✅ 使用者驗證成功: ${userProfile.displayName} (${userProfile.emailAddress})`);
       return userProfile;
-
+    
     } catch (error) {
       console.error("❌ 使用者驗證失敗:", error instanceof Error ? error.message : String(error));
       throw new Error(`使用者驗證失敗: ${error instanceof Error ? error.message : String(error)}`);
@@ -119,7 +125,7 @@ class AzureDevOpsService {
    */
   private validateConfig(): void {
     if (!this.config.pat || !this.config.orgUrl) {
-      const errorMsg = "Azure DevOps 配置不完整，請檢查環境變數 AZURE_DEVOPS_PAT, AZURE_DEVOPS_ORG_URL";
+      const errorMsg = "Azure DevOps 配置不完整，請檢查 headers 或環境變數。";
       console.error(`❌ ${errorMsg}`);
       throw new Error(errorMsg);
     }
@@ -135,6 +141,21 @@ class AzureDevOpsService {
     
     const expand = includeRelations ? '?$expand=relations&api-version=7.0' : '?api-version=7.0';
     return baseUrl + expand;
+  }
+
+  /**
+   * 建構 Web UI URL
+   */
+  private buildWebUrl(workItemId: number): string {
+    // 從 orgUrl 中移除可能的尾隨斜線
+    const baseOrgUrl = this.config.orgUrl.replace(/\/$/, '');
+    
+    if (this.config.project) {
+      return `${baseOrgUrl}/${this.config.project}/_workitems/edit/${workItemId}/`;
+    } else {
+      // 如果沒有專案，使用預設格式
+      return `${baseOrgUrl}/_workitems/edit/${workItemId}/`;
+    }
   }
 
   /**
@@ -185,16 +206,8 @@ class AzureDevOpsService {
    */
   private formatDescription(description?: string): string {
     if (!description) return "無描述";
-    
-    // 移除 HTML 標籤
     const cleanText = description.replace(/<[^>]*>/g, '');
-    
-    // 限制長度
-    if (cleanText.length > 500) {
-      return cleanText.substring(0, 500) + "...";
-    }
-    
-    return cleanText;
+    return cleanText.length > 500 ? cleanText.substring(0, 500) + "..." : cleanText;
   }
 
   /**
@@ -202,163 +215,72 @@ class AzureDevOpsService {
    */
   async getWorkItem(workItemId: number): Promise<WorkItem> {
     this.validateConfig();
-
     try {
       const url = this.buildApiUrl(workItemId);
-
       const response = await fetch(url, {
         method: "GET",
         headers: this.getAuthHeaders(),
       });
-
       this.logApiCall('GET', url, workItemId, response.status);
-
       if (!response.ok) {
         const errorText = await response.text();
-        
-        console.error(`📋 API 錯誤詳情: ${errorText}`);
-        
-        if (response.status === 404) {
-          throw new Error(`工作事項 ${workItemId} 不存在`);
-        } else if (response.status === 401) {
-          // 檢查是否是 PAT 過期
-          if (errorText.includes("expired") || errorText.includes("Personal Access Token used has expired")) {
-            throw new Error("Azure DevOps Personal Access Token (PAT) 已過期，請更新您的 PAT");
-          }
-          throw new Error("Azure DevOps 驗證失敗，請檢查 PAT 權限或是否已過期");
+        if (response.status === 404) throw new Error(`工作事項 ${workItemId} 不存在`);
+        if (response.status === 401) {
+          if (errorText.includes("expired")) throw new Error("Azure DevOps PAT 已過期");
+          throw new Error("Azure DevOps 驗證失敗，請檢查 PAT 權限");
         }
-        throw new Error(`Azure DevOps API 錯誤: ${response.status} ${response.statusText} - ${errorText}`);
+        throw new Error(`Azure DevOps API 錯誤: ${response.status} ${response.statusText}`);
       }
-
-      const workItem = await response.json() as WorkItem;
-      return workItem;
+      return await response.json() as WorkItem;
     } catch (error) {
       console.error("❌ 取得工作事項失敗:", error instanceof Error ? error.message : String(error));
-      throw new Error(`取得工作事項失敗: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
   /**
    * 遞迴查詢工作事項的上層 Feature 或 Epic
    */
-  async findParentFeature(
-    workItemId: number,
-    visited = new Set<number>(),
-    depth = 0
-  ): Promise<WorkItem | null> {
-    // 多重安全檢查
-    if (visited.has(workItemId)) {
+  async findParentFeature(workItemId: number, visited = new Set<number>(), depth = 0): Promise<WorkItem | null> {
+    if (visited.has(workItemId) || depth > MAX_RECURSION_DEPTH || visited.size > MAX_VISITED_ITEMS || !this.isValidWorkItemId(workItemId)) {
       return null;
     }
-    
-    if (depth > MAX_RECURSION_DEPTH) {
-      return null;
-    }
-    
-    if (visited.size > MAX_VISITED_ITEMS) {
-      return null;
-    }
-    
-    if (!this.isValidWorkItemId(workItemId)) {
-      console.log(`⚠️ 無效的工作事項 ID: ${workItemId}`);
-      return null;
-    }
-    
     visited.add(workItemId);
 
     try {
-      // API 調用前的延遲（避免過快調用）
-      if (depth > 0) {
-        await new Promise(resolve => setTimeout(resolve, API_DELAY_MS));
-      }
+      if (depth > 0) await new Promise(resolve => setTimeout(resolve, API_DELAY_MS));
       
-      // 取得包含關聯資訊的工作事項
       const url = this.buildApiUrl(workItemId, true);
-
       const response = await fetch(url, {
         method: "GET",
         headers: this.getAuthHeaders(),
       });
-
       this.logApiCall('GET', url, workItemId, response.status);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        
-        if (response.status === 404) {
-          console.log(`❌ 工作事項 ${workItemId} 不存在或無權限訪問`);
-          return null;
-        } else if (response.status === 401) {
-          if (errorText.includes("expired") || errorText.includes("Personal Access Token used has expired")) {
-            throw new Error("Azure DevOps Personal Access Token (PAT) 已過期，請更新您的 PAT");
-          }
-          throw new Error("Azure DevOps 驗證失敗，請檢查 PAT 權限或是否已過期");
-        } else if (response.status === 429) {
-          console.log(`⚠️ API 速率限制，跳過工作事項 ${workItemId}`);
-          return null;
-        }
-        throw new Error(`Azure DevOps API 錯誤: ${response.status} ${response.statusText}`);
-      }
+      if (!response.ok) return null;
 
       const workItem = await response.json() as WorkItem;
-      
-      console.log(`📋 工作事項 ${workItem.id}: ${workItem.fields["System.Title"]} (${workItem.fields["System.WorkItemType"]})`);
+      const workItemType = workItem.fields["System.WorkItemType"];
 
-      // 如果這個工作事項本身就是 Feature 或 Epic，返回結果
-      if (workItem.fields["System.WorkItemType"] === "Feature" || workItem.fields["System.WorkItemType"] === "Epic") {
-        console.log(`🎯 找到 ${workItem.fields["System.WorkItemType"]}: ${workItem.fields["System.Title"]}`);
+      if (workItemType === "Feature" || workItemType === "Epic") {
         return workItem;
       }
 
-      // 查詢父項關聯
-      if (workItem.relations && workItem.relations.length > 0) {
-        let parentCount = 0;
-        
+      if (workItem.relations) {
         for (const relation of workItem.relations) {
           if (relation.rel === "System.LinkTypes.Hierarchy-Reverse") {
-            parentCount++;
-            
-            // 限制每個工作事項最多處理指定數量的父項關聯
-            if (parentCount > MAX_PARENT_RELATIONS) {
-              console.log(`⚠️ 父項關聯過多，跳過後續查詢`);
-              break;
-            }
-            
             const parentIdMatch = relation.url.match(/workItems\/(\d+)$/);
-            
             if (parentIdMatch) {
               const parentId = parseInt(parentIdMatch[1]);
-              
-              // 檢查父項 ID 是否有效
-              if (!this.isValidWorkItemId(parentId)) {
-                console.log(`⚠️ 無效的父項 ID: ${parentId}`);
-                continue;
-              }
-              
-              console.log(`⬆️ 找到父項工作事項: ${parentId}`);
-              
-              // 遞迴查詢父項
               const parentFeature = await this.findParentFeature(parentId, visited, depth + 1);
-              if (parentFeature) {
-                return parentFeature;
-              }
+              if (parentFeature) return parentFeature;
             }
           }
         }
       }
-
-      console.log(`📝 工作事項 ${workItemId} 沒有上層的 Feature 或 Epic`);
       return null;
-
     } catch (error) {
-      console.error(`❌ 查詢工作事項 ${workItemId} 失敗:`, error instanceof Error ? error.message : String(error));
-      
-      // 對於特定錯誤，重新拋出；對於其他錯誤，返回 null 讓程序繼續
-      if (error instanceof Error && 
-          (error.message.includes("PAT") || error.message.includes("驗證失敗"))) {
-        throw error;
-      }
-      
+      console.error(`❌ 查詢工作事項 ${workItemId} 失敗:`, error);
       return null;
     }
   }
@@ -368,38 +290,18 @@ class AzureDevOpsService {
    */
   formatWorkItem(workItem: WorkItem): string {
     const fields = workItem.fields;
-    let result = `**🎯 工作事項 #${fields["System.Id"]}**\n\n`;
+    const workItemId = fields["System.Id"] || workItem.id;
+    const webUrl = this.buildWebUrl(workItemId);
     
+    let result = `**🎯 工作事項 #${workItemId}**\n\n`;
     result += `**📝 標題**: ${fields["System.Title"]}\n`;
     result += `**🏷️ 類型**: ${fields["System.WorkItemType"]}\n`;
     result += `**📊 狀態**: ${fields["System.State"]}\n`;
-    
-    if (fields["System.AssignedTo"]) {
-      result += `**👤 指派給**: ${fields["System.AssignedTo"].displayName}\n`;
-    } else {
-      result += `**👤 指派給**: 未指派\n`;
-    }
-    
+    result += `**👤 指派給**: ${fields["System.AssignedTo"]?.displayName || '未指派'}\n`;
     result += `**👨‍💻 建立者**: ${fields["System.CreatedBy"].displayName}\n`;
     result += `**📅 建立日期**: ${this.formatDate(fields["System.CreatedDate"])}\n`;
-    result += `**🔄 最後修改**: ${this.formatDate(fields["System.ChangedDate"])}\n`;
-    
-    if (fields["Microsoft.VSTS.Common.Priority"]) {
-      result += `**⚡ 優先度**: ${fields["Microsoft.VSTS.Common.Priority"]}\n`;
-    }
-    
-    if (fields["Microsoft.VSTS.Common.Severity"]) {
-      result += `**🚨 嚴重性**: ${fields["Microsoft.VSTS.Common.Severity"]}\n`;
-    }
-    
-    if (fields["System.Tags"]) {
-      result += `**🏷️ 標籤**: ${fields["System.Tags"]}\n`;
-    }
-    
-    result += `\n**📄 描述**:\n`;
-    result += this.formatDescription(fields["System.Description"]);
-    result += `\n\n**🔗 連結**: [在 Azure DevOps 中檢視](${workItem.url})\n`;
-
+    result += `\n**📄 描述**:\n${this.formatDescription(fields["System.Description"])}`;
+    result += `\n\n**🔗 連結**: [在 Azure DevOps 中檢視](${webUrl})\n`;
     return result;
   }
 
@@ -408,291 +310,171 @@ class AzureDevOpsService {
    */
   formatParentFeature(feature: WorkItem): string {
     const fields = feature.fields;
+    const featureId = fields["System.Id"] || feature.id;
+    const webUrl = this.buildWebUrl(featureId);
+    
     let result = `**🎯 找到上層 ${fields["System.WorkItemType"]}**\n\n`;
-    
-    result += `**📝 ID**: ${fields["System.Id"]}\n`;
+    result += `**📝 ID**: ${featureId}\n`;
     result += `**📝 標題**: ${fields["System.Title"]}\n`;
-    result += `**🏷️ 類型**: ${fields["System.WorkItemType"]}\n`;
     result += `**📊 狀態**: ${fields["System.State"]}\n`;
-    
-    if (fields["System.AssignedTo"]) {
-      result += `**👤 指派給**: ${fields["System.AssignedTo"].displayName}\n`;
-    } else {
-      result += `**👤 指派給**: 未指派\n`;
-    }
-    
-    result += `**👨‍💻 建立者**: ${fields["System.CreatedBy"].displayName}\n`;
-    result += `**📅 建立日期**: ${this.formatDate(fields["System.CreatedDate"])}\n`;
-    result += `**🔄 最後修改**: ${this.formatDate(fields["System.ChangedDate"])}\n`;
-    
-    if (fields["Microsoft.VSTS.Common.Priority"]) {
-      result += `**⚡ 優先度**: ${fields["Microsoft.VSTS.Common.Priority"]}\n`;
-    }
-    
-    if (fields["System.Tags"]) {
-      result += `**🏷️ 標籤**: ${fields["System.Tags"]}\n`;
-    }
-    
-    result += `\n**📄 描述**:\n`;
-    result += this.formatDescription(fields["System.Description"]);
-    result += `\n\n**🔗 連結**: [在 Azure DevOps 中檢視](${feature.url})\n`;
-
+    result += `**👤 指派給**: ${fields["System.AssignedTo"]?.displayName || '未指派'}\n`;
+    result += `\n**🔗 連結**: [在 Azure DevOps 中檢視](${webUrl})\n`;
     return result;
   }
 }
 
-// Zod 驗證架構
-const ValidateUserSchema = z.object({
-  azure_devops_pat: z.string().min(1),
-  azure_devops_org_url: z.string().url(),
-});
+/**
+ * 從請求 headers 中提取 Azure DevOps 配置
+ */
+function extractAzureDevOpsConfig(): AzureDevOpsConfig {
+  const headers = getCurrentRequestHeaders();
+  
+  const pat = headers.get('x-azure-devops-pat') || headers.get('X-Azure-DevOps-PAT');
+  const orgUrl = headers.get('x-azure-devops-org-url') || headers.get('X-Azure-DevOps-Org-URL');
+  const project = headers.get('x-azure-devops-project') || headers.get('X-Azure-DevOps-Project');
 
-const GetWorkItemSchema = z.object({
-  work_item_id: z.number().int().positive(),
-  azure_devops_pat: z.string().min(1),
-  azure_devops_org_url: z.string().url(),
-  azure_devops_project: z.string().optional(),
-});
+  if (!pat || !orgUrl) {
+    throw new Error("Azure DevOps PAT 和組織 URL 是必需的。");
+  }
 
-const FindParentFeatureSchema = z.object({
-  work_item_id: z.number().int().positive(),
-  azure_devops_pat: z.string().min(1),
-  azure_devops_org_url: z.string().url(),
-  azure_devops_project: z.string().optional(),
-});
+  return {
+    pat,
+    orgUrl,
+    project: project || undefined,
+  };
+}
 
 /**
  * 註冊 Azure DevOps 工具到 MCP 伺服器
  */
 export function registerAzureDevOpsTools(server: McpServer) {
   // 註冊使用者驗證工具
-  server.tool("validate_azure_devops_user", {
-    description: "驗證 Azure DevOps 使用者身份和 PAT 有效性，顯示使用者資訊",
-    inputSchema: {
-      type: "object",
-      properties: {
-        azure_devops_pat: {
-          type: "string",
-          description: "Azure DevOps Personal Access Token",
-        },
-        azure_devops_org_url: {
-          type: "string",
-          description: "Azure DevOps 組織 URL (例如: https://dev.azure.com/yourorg)",
-        },
-      },
-      required: ["azure_devops_pat", "azure_devops_org_url"],
+  server.registerTool(
+    "validate_azure_devops_user",
+    {
+      title: "驗證 Azure DevOps 使用者",
+      description: `驗證 Azure DevOps 使用者身份和 PAT (Personal Access Token) 有效性，確認連線狀態。
+
+🎯 **使用情境**：
+• 首次設定或使用 Azure DevOps 功能時
+• 遇到權限錯誤或連線問題時
+• 用戶詢問「我的 Azure DevOps 設定正確嗎？」
+• 需要確認目前登入的使用者身份時
+• PAT 可能過期或無效時
+• 用戶回報無法存取工作事項時
+• 設定新環境或切換帳號後
+• 用戶提到「驗證」、「登入」、「權限」、「連線」等問題時
+
+🔧 **觸發關鍵字**：驗證、登入、權限、連線、設定、PAT、token、身份、帳號`,
+      inputSchema: {},
     },
-  }, async (args) => {
-    try {
-      const { azure_devops_pat, azure_devops_org_url } = ValidateUserSchema.parse(args);
-
-      const config: AzureDevOpsConfig = {
-        pat: azure_devops_pat,
-        orgUrl: azure_devops_org_url,
-      };
-
-      const service = new AzureDevOpsService(config);
-      const userProfile = await service.validateUser();
-
-      const result = `**🎯 Azure DevOps 使用者驗證成功**\n\n` +
-        `**👤 使用者名稱**: ${userProfile.displayName}\n` +
-        `**📧 電子郵件**: ${userProfile.emailAddress}\n` +
-        `**🆔 使用者 ID**: ${userProfile.id}\n` +
-        `**🔐 驗證狀態**: ✅ PAT 有效且具備存取權限\n` +
-        `**🏢 組織**: ${azure_devops_org_url}\n\n` +
-        `**💡 說明**: 您現在可以使用其他 Azure DevOps 工具來查詢工作事項資訊。`;
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: result,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `❌ 使用者驗證失敗: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
+    async () => {
+      try {
+        const config = extractAzureDevOpsConfig();
+        const service = new AzureDevOpsService(config);
+        const userProfile = await service.validateUser();
+        
+        const result = `✅ **Azure DevOps 使用者驗證成功**\n\n` +
+                      `**👤 使用者名稱**: ${userProfile.displayName}\n` +
+                      `**📧 電子郵件**: ${userProfile.emailAddress}\n` +
+                      `**🆔 使用者 ID**: ${userProfile.id}\n`;
+        
+        return { content: [{ type: "text", text: result }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `驗證失敗: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
+      }
     }
-  });
+  );
 
   // 註冊取得工作事項工具
-  server.tool("get_work_item", {
-    description: "根據工作事項編號取得 Azure DevOps 工作事項的詳細資訊，包括標題、狀態、指派人員、描述等。用於查詢特定工作事項的完整資訊。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        work_item_id: {
-          type: "number",
-          description: "要查詢的工作事項編號 (Work Item ID)",
-        },
-        azure_devops_pat: {
-          type: "string",
-          description: "Azure DevOps Personal Access Token",
-        },
-        azure_devops_org_url: {
-          type: "string",
-          description: "Azure DevOps 組織 URL (例如: https://dev.azure.com/yourorg)",
-        },
-        azure_devops_project: {
-          type: "string",
-          description: "Azure DevOps 專案名稱 (可選)",
-        },
+  server.registerTool(
+    "get_work_item",
+    {
+      title: "取得工作事項詳細資訊",
+      description: `根據工作事項編號取得 Azure DevOps 工作事項的詳細資訊，並自動查詢上層 Feature/Epic。
+
+🎯 **使用情境**：
+• 當用戶提到工作事項編號、票號、Task ID、Bug ID 時
+• 看到 Git commit 訊息包含 #12345、[12345]、WI-12345 等格式時
+• 需要查看工作進度、指派人員、工作狀態時
+• 想了解某個任務屬於哪個功能或專案時
+• 協助分析程式碼變更與工作事項的關聯時
+• 用戶詢問「這個 issue 的詳細資訊」、「幫我查一下這個工作」時
+
+💡 **識別關鍵字**：工作事項、任務、票、issue、bug、story、task、工作編號、ID`,
+      inputSchema: {
+        work_item_id: z.number().int().positive().describe("工作事項編號 (通常是5位數字，可從Git commit訊息、PR標題、或用戶對話中提取)"),
       },
-      required: ["work_item_id", "azure_devops_pat", "azure_devops_org_url"],
     },
-  }, async (args) => {
-    try {
-      const { work_item_id, azure_devops_pat, azure_devops_org_url, azure_devops_project } = 
-        GetWorkItemSchema.parse(args);
-
-      const config: AzureDevOpsConfig = {
-        pat: azure_devops_pat,
-        orgUrl: azure_devops_org_url,
-        project: azure_devops_project,
-      };
-
-      const service = new AzureDevOpsService(config);
-      
-      // 首先驗證使用者身份
-      console.log("🔐 開始驗證使用者身份...");
-      const userProfile = await service.validateUser();
-      console.log(`✅ 使用者驗證成功，歡迎 ${userProfile.displayName}`);
-      
-      // 驗證成功後執行工作事項查詢
-      const workItem = await service.getWorkItem(work_item_id);
-      let result = `**👤 驗證使用者**: ${userProfile.displayName} (${userProfile.emailAddress})\n\n`;
-      result += service.formatWorkItem(workItem);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: result,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `錯誤: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
+    async ({ work_item_id }) => {
+      try {
+        const config = extractAzureDevOpsConfig();
+        const service = new AzureDevOpsService(config);
+        
+        // 取得工作事項詳情
+        const workItem = await service.getWorkItem(work_item_id);
+        let result = service.formatWorkItem(workItem);
+        
+        // 查詢上層 Feature/Epic
+        const parentFeature = await service.findParentFeature(work_item_id);
+        if (parentFeature) {
+          result += `\n\n` + service.formatParentFeature(parentFeature);
+        } else {
+          result += `\n\n**⬆️ 上層**: 無上層 Feature 或 Epic\n`;
+        }
+        
+        return { 
+          content: [{ 
+            type: "text", 
+            text: result
+          }] 
+        };
+      } catch (error) {
+        return { 
+          content: [{ 
+            type: "text", 
+            text: `錯誤: ${error instanceof Error ? error.message : String(error)}` 
+          }], 
+          isError: true 
+        };
+      }
     }
-  });
+  );
 
   // 註冊查詢上層 Feature/Epic 工具
-  server.tool("find_parent_feature", {
-    description: "查詢工作事項的上層 Feature 或 Epic。適用於 Task、Bug、User Story、Product Backlog Item 等子工作事項，可以找到它們所屬的 Feature 或 Epic。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        work_item_id: {
-          type: "number",
-          description: "要查詢的工作事項編號 (Work Item ID)",
-        },
-        azure_devops_pat: {
-          type: "string",
-          description: "Azure DevOps Personal Access Token",
-        },
-        azure_devops_org_url: {
-          type: "string",
-          description: "Azure DevOps 組織 URL (例如: https://dev.azure.com/yourorg)",
-        },
-        azure_devops_project: {
-          type: "string",
-          description: "Azure DevOps 專案名稱 (可選)",
-        },
+  server.registerTool(
+    "find_parent_feature",
+    {
+      title: "查詢上層 Feature 或 Epic",
+      description: `查詢工作事項的上層 Feature 或 Epic，了解工作項目的階層關係。
+
+🎯 **使用情境**：
+• 用戶想知道某個任務屬於哪個大功能或專案時
+• 需要追蹤工作進度到更高層級的規劃時
+• 分析任務與產品功能的對應關係時
+• 用戶詢問「這個工作是屬於哪個功能的？」
+• 需要了解工作項目的上下文和背景時
+• 協助專案管理或進度報告時
+• 當用戶提到「上層」、「父級」、「歸屬」等概念時
+
+🔍 **觸發關鍵字**：上層、父級、歸屬、所屬功能、大功能、Epic、Feature、專案階層`,
+      inputSchema: {
+        work_item_id: z.number().int().positive().describe("工作事項編號 (5位數字，範例：12345，可從對話、commit訊息或文件中提取)"),
       },
-      required: ["work_item_id", "azure_devops_pat", "azure_devops_org_url"],
     },
-  }, async (args) => {
-    try {
-      const { work_item_id, azure_devops_pat, azure_devops_org_url, azure_devops_project } = 
-        FindParentFeatureSchema.parse(args);
-
-      const config: AzureDevOpsConfig = {
-        pat: azure_devops_pat,
-        orgUrl: azure_devops_org_url,
-        project: azure_devops_project,
-      };
-
-      const service = new AzureDevOpsService(config);
-
-      // 首先驗證使用者身份
-      console.log("🔐 開始驗證使用者身份...");
-      const userProfile = await service.validateUser();
-      console.log(`✅ 使用者驗證成功，歡迎 ${userProfile.displayName}`);
-
-      // 驗證輸入
-      if (!Number.isInteger(work_item_id) || work_item_id <= 0 || work_item_id > 999999) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `❌ 無效的工作事項 ID: ${work_item_id}`,
-            },
-          ],
-          isError: true,
-        };
+    async ({ work_item_id }) => {
+      try {
+        const config = extractAzureDevOpsConfig();
+        const service = new AzureDevOpsService(config);
+        const feature = await service.findParentFeature(work_item_id);
+        if (!feature) {
+          return { content: [{ type: "text", text: `❌ 工作事項 ${work_item_id} 沒有找到上層的 Feature 或 Epic` }] };
+        }
+        const result = service.formatParentFeature(feature);
+        return { content: [{ type: "text", text: result }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `❌ 查詢上層 Feature 失敗: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
       }
-
-      console.log(`🔍 查詢工作事項 ${work_item_id} 的上層 Feature/Epic`);
-
-      // 設置查詢超時
-      const timeoutPromise = new Promise<null>((_, reject) => {
-        setTimeout(() => reject(new Error(`查詢超時 (${QUERY_TIMEOUT_MS / 1000}秒)`)), QUERY_TIMEOUT_MS);
-      });
-
-      const feature = await Promise.race([
-        service.findParentFeature(work_item_id),
-        timeoutPromise
-      ]);
-
-      if (!feature) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `❌ 工作事項 ${work_item_id} 沒有找到上層的 Feature 或 Epic\n\n💡 **可能原因**:\n- 此工作事項本身就是最高層級\n- 沒有設置階層關係\n- 工作事項不存在或無權限訪問`,
-            },
-          ],
-        };
-      }
-
-      let result = `**👤 驗證使用者**: ${userProfile.displayName} (${userProfile.emailAddress})\n\n`;
-      result += service.formatParentFeature(feature);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: result,
-          },
-        ],
-      };
-
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `錯誤: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
     }
-  });
+  );
 }
